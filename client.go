@@ -225,10 +225,12 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, hostKeyCallback ssh
 }
 
 func (client *NativeClient) dialSuccess() bool {
-	if _, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config); err != nil {
+	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
+	if err != nil {
 		log.Debugf("Error dialing TCP: %s", err)
 		return false
 	}
+	conn.Close()
 	return true
 }
 
