@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -92,10 +93,13 @@ type Client interface {
 
 // NativeClient is the structure for native client use
 type NativeClient struct {
-	Config        ssh.ClientConfig // Config defines the golang ssh client config
-	Hostname      string           // Hostname is the host to connect to
-	Port          int              // Port is the port to connect to
-	ClientVersion string           // ClientVersion is the version string to send to the server when identifying
+	Config   ssh.ClientConfig // Config defines the golang ssh client config
+	Hostname string           // Hostname is the host to connect to
+	Port     int              // Port is the port to connect to
+
+	ProxyHost     string // Optional proxy
+	ProxyPort     int
+	ClientVersion string // ClientVersion is the version string to send to the server when identifying
 	openSession   *ssh.Session
 	openConn      *ssh.Client
 }
@@ -163,7 +167,7 @@ func NewClient(cfg *Config) (Client, error) {
 }
 
 // NewNativeClient creates a new Client using the golang ssh library
-func NewNativeClient(user, host, clientVersion string, port int, auth *Auth, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
+func NewNativeClient(user, host, clientVersion string, port int, proxyHost string, proxyPort int, auth *Auth, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
 	if clientVersion == "" {
 		clientVersion = "SSH-2.0-Go"
 	}
@@ -177,6 +181,8 @@ func NewNativeClient(user, host, clientVersion string, port int, auth *Auth, hos
 		Config:        config,
 		Hostname:      host,
 		Port:          port,
+		ProxyHost:     proxyHost,
+		ProxyPort:     proxyPort,
 		ClientVersion: clientVersion,
 	}, nil
 }
@@ -225,49 +231,102 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, hostKeyCallback ssh
 }
 
 func (client *NativeClient) dialSuccess() bool {
-	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
-	if err != nil {
-		log.Debugf("Error dialing TCP: %s", err)
-		return false
+	var conn net.Conn
+	var proxyClient *ssh.Client
+	var err error
+	if client.ProxyHost != "" {
+		log.Debugf("Connecting via proxy: %s", client.ProxyHost)
+		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.Config)
+		if err != nil {
+			log.Infof("proxy error: v", err)
+			return false
+		}
+		conn, err = proxyClient.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port))
+		if err != nil {
+			log.Debugf("Error dialing TCP: %s", err)
+			proxyClient.Close()
+			return false
+		}
+	} else {
+		conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port))
+		//conn, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
+		if err != nil {
+			log.Debugf("Error dialing TCP: %s", err)
+			return false
+		}
 	}
 	conn.Close()
+	if proxyClient != nil {
+		proxyClient.Close()
+	}
 	return true
 }
 
-func (client *NativeClient) Connect() (*ssh.Client, error) {
-	if err := mcnutils.WaitFor(client.dialSuccess); err != nil {
-		return nil, fmt.Errorf("Error attempting SSH client dial: %s", err)
+func (client *NativeClient) Connect() (*ssh.Client, *ssh.Client, error) {
+	var conn *ssh.Client
+	var proxyClient *ssh.Client
+
+	var err error
+	if err = mcnutils.WaitFor(client.dialSuccess); err != nil {
+		return nil, nil, fmt.Errorf("Error attempting SSH client dial: %s", err)
 	}
 
-	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
+	if client.ProxyHost != "" {
+		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.Config)
+		if err != nil {
+			log.Debugf("proxy error: %v", err)
+			return nil, nil, err
+		}
+		nc, err := proxyClient.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port))
+		if err != nil {
+			log.Debugf("Error dialing TCP: %s", err)
+			proxyClient.Close()
+			return nil, nil, err
+		}
+		ncc, chans, reqs, err := ssh.NewClientConn(nc, client.Hostname, &client.Config)
+		if err != nil {
+			proxyClient.Close()
+			return nil, nil, err
+		}
+		conn = ssh.NewClient(ncc, chans, reqs)
+
+	} else {
+		conn, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("Mysterious error dialing TCP for SSH (we already succeeded at least once) : %s", err)
+		return nil, nil, fmt.Errorf("Mysterious error dialing TCP for SSH (we already succeeded at least once) : %s", err)
 	}
 
-	return conn, nil
+	return proxyClient, conn, nil
 }
 
-func (client *NativeClient) Session() (*ssh.Session, *ssh.Client, error) {
-	conn, err := client.Connect()
+func (client *NativeClient) Session() (*ssh.Session, *ssh.Client, *ssh.Client, error) {
+	proxy, conn, err := client.Connect()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	session, err := conn.NewSession()
 	if err != nil {
 		conn.Close()
-		return nil, nil, err
+		if proxy != nil {
+			proxy.Close()
+		}
+		return nil, nil, nil, err
 	}
-	return session, conn, nil
+	return session, proxy, conn, nil
 }
 
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) Output(command string) (string, error) {
-	session, conn, err := client.Session()
+	session, proxy, conn, err := client.Session()
 	if err != nil {
 		return "", err
 	}
 	defer session.Close()
 	defer conn.Close()
+	if proxy != nil {
+		defer proxy.Close()
+	}
 
 	output, err := session.CombinedOutput(command)
 
@@ -276,12 +335,15 @@ func (client *NativeClient) Output(command string) (string, error) {
 
 // Output returns the output of the command run on the remote host as well as a pty.
 func (client *NativeClient) OutputWithPty(command string) (string, error) {
-	session, conn, err := client.Session()
+	session, proxy, conn, err := client.Session()
 	if err != nil {
 		return "", nil
 	}
 	defer session.Close()
 	defer conn.Close()
+	if proxy != nil {
+		defer proxy.Close()
+	}
 
 	fd := int(os.Stdin.Fd())
 
@@ -310,7 +372,7 @@ func (client *NativeClient) OutputWithPty(command string) (string, error) {
 // Start starts the specified command without waiting for it to finish. You
 // have to call the Wait function for that.
 func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.ReadCloser, sin io.WriteCloser, reterr error) {
-	session, conn, err := client.Session()
+	session, proxy, conn, err := client.Session()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -318,6 +380,9 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 		if reterr != nil {
 			session.Close()
 			conn.Close()
+			if proxy != nil {
+				proxy.Close()
+			}
 		}
 	}()
 
