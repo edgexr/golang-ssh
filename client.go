@@ -96,9 +96,9 @@ type NativeClient struct {
 	Config        ssh.ClientConfig // Config defines the golang ssh client config
 	Hostname      string           // Hostname is the host to connect to
 	Port          int              // Port is the port to connect to
-	ProxyHost     string           // Optional proxy
-	ProxyPort     int
-	ClientVersion string // ClientVersion is the version string to send to the server when identifying
+	ProxyHost     string           // Optional proxy host
+	ProxyPort     int              // Optional proxy port
+	ClientVersion string           // ClientVersion is the version string to send to the server when identifying
 	openSession   *ssh.Session
 	openConn      *ssh.Client
 }
