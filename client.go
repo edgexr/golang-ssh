@@ -76,7 +76,7 @@ type Client interface {
 
 	// Shell requests a shell from the remote. If an arg is passed, it tries to
 	// exec them on the server.
-	Shell(sin io.Reader, sout, serr io.Writer, args ...string) error
+	Shell(args ...string) error
 
 	// Start starts the specified command without waiting for it to finish. You
 	// have to call the Wait function for that.
@@ -84,7 +84,7 @@ type Client interface {
 	// The first two io.ReadCloser are the standard output and the standard
 	// error of the executing command respectively. The returned error follows
 	// the same logic as in the exec.Cmd.Start function.
-	Start(command string) (io.ReadCloser, io.ReadCloser, io.WriteCloser, error)
+	Start(command string) (io.ReadCloser, io.ReadCloser, error)
 
 	// Wait waits for the command started by the Start function to exit. The
 	// returned error follows the same logic as in the exec.Cmd.Wait function.
@@ -93,11 +93,10 @@ type Client interface {
 
 // NativeClient is the structure for native client use
 type NativeClient struct {
-	Config   ssh.ClientConfig // Config defines the golang ssh client config
-	Hostname string           // Hostname is the host to connect to
-	Port     int              // Port is the port to connect to
-
-	ProxyHost     string // Optional proxy
+	Config        ssh.ClientConfig // Config defines the golang ssh client config
+	Hostname      string           // Hostname is the host to connect to
+	Port          int              // Port is the port to connect to
+	ProxyHost     string           // Optional proxy
 	ProxyPort     int
 	ClientVersion string // ClientVersion is the version string to send to the server when identifying
 	openSession   *ssh.Session
@@ -371,10 +370,10 @@ func (client *NativeClient) OutputWithPty(command string) (string, error) {
 
 // Start starts the specified command without waiting for it to finish. You
 // have to call the Wait function for that.
-func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.ReadCloser, sin io.WriteCloser, reterr error) {
+func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.ReadCloser, reterr error) {
 	session, proxy, conn, err := client.Session()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	defer func() {
 		if reterr != nil {
@@ -388,23 +387,23 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	stderr, err := session.StderrPipe()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	stdin, err := session.StdinPipe()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if err := session.Start(command); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	client.openSession = session
 	client.openConn = conn
-	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), stdin, nil
+	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), nil
 }
 
 // Wait waits for the command started by the Start function to exit. The
@@ -420,7 +419,7 @@ func (client *NativeClient) Wait() error {
 
 // Shell requests a shell from the remote. If an arg is passed, it tries to
 // exec them on the server.
-func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...string) error {
+func (client *NativeClient) Shell(args ...string) error {
 	var (
 		termWidth, termHeight = 80, 24
 	)
@@ -436,9 +435,9 @@ func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...s
 	}
 	defer session.Close()
 
-	session.Stdout = sout
-	session.Stderr = serr
-	session.Stdin = sin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+	session.Stdin = os.Stdin
 
 	modes := ssh.TerminalModes{
 		ssh.ECHO: 1,
