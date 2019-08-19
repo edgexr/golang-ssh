@@ -93,7 +93,8 @@ type Client interface {
 
 // NativeClient is the structure for native client use
 type NativeClient struct {
-	Config        ssh.ClientConfig // Config defines the golang ssh client config
+	HostConfig    ssh.ClientConfig // Config defines the golang ssh client config
+	ProxyConfig   ssh.ClientConfig // Config defines the golang ssh client config
 	Hostname      string           // Hostname is the host to connect to
 	Port          int              // Port is the port to connect to
 	ProxyHost     string           // Optional proxy host
@@ -149,35 +150,27 @@ func (cfg *Config) hostKey() ssh.HostKeyCallback {
 	return ssh.InsecureIgnoreHostKey()
 }
 
-// NewClient creates a new Client using the golang ssh library.
-func NewClient(cfg *Config) (Client, error) {
-	config, err := NewNativeConfig(cfg.User, cfg.version(), cfg.Auth, cfg.hostKey())
-	if err != nil {
-		return nil, fmt.Errorf("Error getting config for native Go SSH: %s", err)
-	}
-	config.Timeout = cfg.timeout()
-
-	return &NativeClient{
-		Config:        config,
-		Hostname:      cfg.Host,
-		Port:          cfg.port(),
-		ClientVersion: cfg.version(),
-	}, nil
-}
-
 // NewNativeClient creates a new Client using the golang ssh library
-func NewNativeClient(user, host, clientVersion string, port int, proxyHost string, proxyPort int, auth *Auth, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
+func NewNativeClient(user, host, clientVersion string, port int, proxyHost string, proxyPort int, hostAuth *Auth, proxyAuth *Auth, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
 	if clientVersion == "" {
 		clientVersion = "SSH-2.0-Go"
 	}
 
-	config, err := NewNativeConfig(user, clientVersion, auth, hostKeyCallback)
+	hostConfig, err := NewNativeConfig(user, clientVersion, hostAuth, hostKeyCallback)
 	if err != nil {
-		return nil, fmt.Errorf("Error getting config for native Go SSH: %s", err)
+		return nil, fmt.Errorf("Error getting host config for native Go SSH: %s", err)
+	}
+	var proxyConfig ssh.ClientConfig
+	if proxyHost != "" {
+		proxyConfig, err = NewNativeConfig(user, clientVersion, proxyAuth, hostKeyCallback)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("Error getting proxy config for native Go SSH: %s", err)
 	}
 
 	return &NativeClient{
-		Config:        config,
+		HostConfig:    hostConfig,
+		ProxyConfig:   proxyConfig,
 		Hostname:      host,
 		Port:          port,
 		ProxyHost:     proxyHost,
@@ -235,7 +228,7 @@ func (client *NativeClient) dialSuccess() bool {
 	var err error
 	if client.ProxyHost != "" {
 		log.Debugf("Connecting via proxy: %s", client.ProxyHost)
-		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.Config)
+		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.ProxyConfig)
 		if err != nil {
 			log.Infof("proxy error: v", err)
 			return false
@@ -270,7 +263,7 @@ func (client *NativeClient) Connect() (*ssh.Client, *ssh.Client, error) {
 	}
 
 	if client.ProxyHost != "" {
-		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.Config)
+		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.ProxyConfig)
 		if err != nil {
 			log.Debugf("proxy error: %v", err)
 			return nil, nil, err
@@ -281,7 +274,7 @@ func (client *NativeClient) Connect() (*ssh.Client, *ssh.Client, error) {
 			proxyClient.Close()
 			return nil, nil, err
 		}
-		ncc, chans, reqs, err := ssh.NewClientConn(nc, client.Hostname, &client.Config)
+		ncc, chans, reqs, err := ssh.NewClientConn(nc, client.Hostname, &client.HostConfig)
 		if err != nil {
 			proxyClient.Close()
 			return nil, nil, err
@@ -289,7 +282,7 @@ func (client *NativeClient) Connect() (*ssh.Client, *ssh.Client, error) {
 		conn = ssh.NewClient(ncc, chans, reqs)
 
 	} else {
-		conn, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
+		conn, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.HostConfig)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("Mysterious error dialing TCP for SSH (we already succeeded at least once) : %s", err)
@@ -422,7 +415,7 @@ func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...s
 	var (
 		termWidth, termHeight = 80, 24
 	)
-	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
+	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.HostConfig)
 	if err != nil {
 		return err
 	}
