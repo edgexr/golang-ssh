@@ -248,7 +248,6 @@ func (client *NativeClient) dialSuccess() bool {
 		}
 	} else {
 		conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port))
-		//conn, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.Config)
 		if err != nil {
 			log.Debugf("Error dialing TCP: %s", err)
 			return false
