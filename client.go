@@ -36,6 +36,8 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
+var SSHOpts = []string{"StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null", "LogLevel=ERROR"}
+
 // ExitError is a conveniance wrapper for (crypto/ssh).ExitError type.
 type ExitError struct {
 	Err      error
@@ -100,6 +102,7 @@ type NativeClient struct {
 	ProxyHost     string           // Optional proxy host
 	ProxyPort     int              // Optional proxy port
 	ClientVersion string           // ClientVersion is the version string to send to the server when identifying
+	RemoteKey     string           // RemoteKey is used to proxy ssh commands to a remote host
 	openSession   *ssh.Session
 	openConn      *ssh.Client
 }
@@ -155,7 +158,6 @@ func NewNativeClient(user, host, clientVersion string, port int, proxyHost strin
 	if clientVersion == "" {
 		clientVersion = "SSH-2.0-Go"
 	}
-
 	hostConfig, err := NewNativeConfig(user, clientVersion, hostAuth, hostKeyCallback)
 	if err != nil {
 		return nil, fmt.Errorf("Error getting host config for native Go SSH: %s", err)
@@ -168,6 +170,11 @@ func NewNativeClient(user, host, clientVersion string, port int, proxyHost strin
 		return nil, fmt.Errorf("Error getting proxy config for native Go SSH: %s", err)
 	}
 
+	key := ""
+	if len(hostAuth.Keys) == 1 {
+		key = hostAuth.Keys[0]
+	}
+
 	return &NativeClient{
 		HostConfig:    hostConfig,
 		ProxyConfig:   proxyConfig,
@@ -176,6 +183,7 @@ func NewNativeClient(user, host, clientVersion string, port int, proxyHost strin
 		ProxyHost:     proxyHost,
 		ProxyPort:     proxyPort,
 		ClientVersion: clientVersion,
+		RemoteKey:     key,
 	}, nil
 }
 
@@ -305,6 +313,13 @@ func (client *NativeClient) Session() (*ssh.Session, *ssh.Client, *ssh.Client, e
 		return nil, nil, nil, err
 	}
 	return session, proxy, conn, nil
+}
+
+//RemoteOutput returns the of the command run proxied
+// through the host to next remote host. The same credentials are used
+func (client *NativeClient) RemoteOutput(remoteHost, command string) (string, error) {
+	sshCmd := fmt.Sprintf("ssh -o %s -o %s -o %s -i %s %s@%s \"%s\"", SSHOpts[0], SSHOpts[1], SSHOpts[2], client.RemoteKey, client.HostConfig.User, remoteHost, command)
+	return client.Output(sshCmd)
 }
 
 // Output returns the output of the command run on the remote host.
