@@ -73,7 +73,7 @@ func wrapError(err error) error {
 
 // Client is a relic interface that both native and external client matched
 type Client interface {
-	// Output returns the output of the command run on the remote host.
+	// Output returns the output of the command run on the host.
 	Output(command string) (string, error)
 
 	// Shell requests a shell from the remote. If an arg is passed, it tries to
@@ -91,6 +91,9 @@ type Client interface {
 	// Wait waits for the command started by the Start function to exit. The
 	// returned error follows the same logic as in the exec.Cmd.Wait function.
 	Wait() error
+
+	// RemoteOutput returns the output of the command run on the remote host
+	RemoteOutput(remoteHost, command string) (string, error)
 }
 
 // NativeClient is the structure for native client use
