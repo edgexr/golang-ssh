@@ -157,17 +157,17 @@ func (cfg *Config) hostKey() ssh.HostKeyCallback {
 }
 
 // NewNativeClient creates a new Client using the golang ssh library
-func NewNativeClient(user, host, clientVersion string, port int, proxyHost string, proxyPort int, hostAuth *Auth, proxyAuth *Auth, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
+func NewNativeClient(user, host, clientVersion string, port int, proxyHost string, proxyPort int, hostAuth *Auth, proxyAuth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
 	if clientVersion == "" {
 		clientVersion = "SSH-2.0-Go"
 	}
-	hostConfig, err := NewNativeConfig(user, clientVersion, hostAuth, hostKeyCallback)
+	hostConfig, err := NewNativeConfig(user, clientVersion, hostAuth, timeout, hostKeyCallback)
 	if err != nil {
 		return nil, fmt.Errorf("Error getting host config for native Go SSH: %s", err)
 	}
 	var proxyConfig ssh.ClientConfig
 	if proxyHost != "" {
-		proxyConfig, err = NewNativeConfig(user, clientVersion, proxyAuth, hostKeyCallback)
+		proxyConfig, err = NewNativeConfig(user, clientVersion, proxyAuth, timeout, hostKeyCallback)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("Error getting proxy config for native Go SSH: %s", err)
@@ -191,7 +191,7 @@ func NewNativeClient(user, host, clientVersion string, port int, proxyHost strin
 }
 
 // NewNativeConfig returns a golang ssh client config struct for use by the NativeClient
-func NewNativeConfig(user, clientVersion string, auth *Auth, hostKeyCallback ssh.HostKeyCallback) (ssh.ClientConfig, error) {
+func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (ssh.ClientConfig, error) {
 	var (
 		authMethods []ssh.AuthMethod
 	)
@@ -230,6 +230,7 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, hostKeyCallback ssh
 		Auth:            authMethods,
 		ClientVersion:   clientVersion,
 		HostKeyCallback: hostKeyCallback,
+		Timeout:         timeout,
 	}, nil
 }
 
@@ -318,10 +319,10 @@ func (client *NativeClient) Session() (*ssh.Session, *ssh.Client, *ssh.Client, e
 	return session, proxy, conn, nil
 }
 
-//RemoteOutput returns the of the command run proxied
-// through the host to next remote host. The same credentials are used
+//RemoteOutput returns the of the command run proxied through the host the remote host. The same credentials and timeout are used
 func (client *NativeClient) RemoteOutput(remoteHost, command string) (string, error) {
-	sshCmd := fmt.Sprintf("ssh -o %s -o %s -o %s -i %s %s@%s \"%s\"", SSHOpts[0], SSHOpts[1], SSHOpts[2], client.RemoteKey, client.HostConfig.User, remoteHost, command)
+	timeout := fmt.Sprintf("ConnectTimeout=%v", client.HostConfig.Timeout.Seconds())
+	sshCmd := fmt.Sprintf("ssh -o %s -o %s -o %s -o %s -i %s %s@%s \"%s\"", SSHOpts[0], SSHOpts[1], SSHOpts[2], timeout, client.RemoteKey, client.HostConfig.User, remoteHost, command)
 	return client.Output(sshCmd)
 }
 
