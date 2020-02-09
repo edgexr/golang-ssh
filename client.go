@@ -25,6 +25,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -175,9 +176,8 @@ func NewNativeClient(user, host, clientVersion string, port int, proxyHost strin
 
 	key := ""
 	if len(hostAuth.Keys) == 1 {
-		key = hostAuth.Keys[0]
+		key = filepath.Base(hostAuth.Keys[0])
 	}
-
 	return &NativeClient{
 		HostConfig:    hostConfig,
 		ProxyConfig:   proxyConfig,
@@ -319,7 +319,7 @@ func (client *NativeClient) Session() (*ssh.Session, *ssh.Client, *ssh.Client, e
 	return session, proxy, conn, nil
 }
 
-//RemoteOutput returns the of the command run proxied through the host the remote host. The same credentials and timeout are used
+//RemoteOutput returns the of the command run proxied through the host the remote host. The same credentials and timeout are used.  The remote key must be in the home directory
 func (client *NativeClient) RemoteOutput(remoteHost, command string) (string, error) {
 	timeout := fmt.Sprintf("ConnectTimeout=%v", client.HostConfig.Timeout.Seconds())
 	sshCmd := fmt.Sprintf("ssh -o %s -o %s -o %s -o %s -i %s %s@%s \"%s\"", SSHOpts[0], SSHOpts[1], SSHOpts[2], timeout, client.RemoteKey, client.HostConfig.User, remoteHost, command)
