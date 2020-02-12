@@ -459,7 +459,7 @@ func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...s
 		}
 
 		// monitor for sigwinch
-		//go monWinCh(session, os.Stdout.Fd())
+		go monWinCh(session, os.Stdout.Fd())
 
 		session.Wait()
 	} else {
