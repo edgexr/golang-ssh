@@ -15,7 +15,7 @@
 // uses golang's native ssh client. It has also been improved to resize the tty
 // accordingly.  The key functions are meant to be used by either client or server
 // and will generate/store keys if not found.
-package main
+package ssh
 
 import (
 	"bytes"
