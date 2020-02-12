@@ -34,8 +34,6 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-var SSHOpts = []string{"StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null", "LogLevel=ERROR"}
-
 // ExitError is a conveniance wrapper for (crypto/ssh).ExitError type.
 type ExitError struct {
 	Err      error
@@ -99,7 +97,6 @@ type HostDetail struct {
 
 // NativeClient is the structure for native client use
 type NativeClient struct {
-	//HostConfigs       []ssh.ClientConfig // Config defines the golang ssh client config
 	HostDetails         []HostDetail // list of Hosts
 	ClientVersion       string       // ClientVersion is the version string to send to the server when identifying
 	openClients         []*ssh.Client
@@ -155,6 +152,16 @@ func (cfg *Config) hostKey() ssh.HostKeyCallback {
 	return ssh.InsecureIgnoreHostKey()
 }
 
+// saves SSH client so it can be closed later
+func (c *NativeClient) saveClient(sshClient *ssh.Client) {
+	c.openClients = append(c.openClients, sshClient)
+}
+
+// saves SSH connection so it can be closed later
+func (c *NativeClient) saveConn(conn net.Conn) {
+	c.openConns = append(c.openConns, conn)
+}
+
 func (c *NativeClient) closeAll() {
 	for _, cl := range c.openClients {
 		cl.Close()
@@ -167,16 +174,19 @@ func (c *NativeClient) closeAll() {
 
 }
 
+// AddHopWithConfig adds a new hop with the specifified config
 func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) error {
 	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: config}
 	c.HostDetails = append(c.HostDetails, hostDetail)
 	return nil
 }
 
+// AddHopWithConfig adds a new hop with the default config when the client was created
 func (c *NativeClient) AddHop(host string, port int) error {
 	return c.AddHopWithConfig(host, port, c.DefaultClientConfig)
 }
 
+// RemoveLastHop removes the last server hop
 func (c *NativeClient) RemoveLastHop() error {
 	if len(c.HostDetails) < 1 {
 		return fmt.Errorf("no hops to remove")
@@ -186,7 +196,7 @@ func (c *NativeClient) RemoveLastHop() error {
 }
 
 // NewNativeClient creates a new Client using the golang ssh library
-func NewNativeClient(user, clientVersion string, host string, port int, hostAuth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (*NativeClient, error) {
+func NewNativeClient(user, clientVersion string, host string, port int, hostAuth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
 	if clientVersion == "" {
 		clientVersion = "SSH-2.0-Go"
 	}
@@ -278,8 +288,8 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 			if err != nil {
 				return nil, fmt.Errorf("ssh client dial fail to %s - %v", destAddr, err)
 			}
-			nclient.openClients = append(nclient.openClients, sshClient)
-			nclient.openConns = append(nclient.openConns, conn)
+			nclient.saveClient(sshClient)
+			nclient.saveConn(conn)
 		} else {
 			conn, err = sshClient.Dial("tcp", destAddr)
 			if err != nil {
@@ -290,8 +300,8 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 				return nil, fmt.Errorf("NewClientConn fail to %s", destAddr)
 			}
 			sshClient = ssh.NewClient(sshconn, chans, reqs)
-			nclient.openClients = append(nclient.openClients, sshClient)
-			nclient.openConns = append(nclient.openConns, conn)
+			nclient.saveClient(sshClient)
+			nclient.saveConn(conn)
 		}
 	} //for
 
