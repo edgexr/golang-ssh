@@ -275,7 +275,6 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 				return nil, fmt.Errorf("ssh dial fail to %s - %v", destAddr, err)
 			}
 			conn, err = sshClient.Dial("tcp", destAddr)
-			fmt.Printf("Conn open %v\n", conn)
 			if err != nil {
 				return nil, fmt.Errorf("ssh client dial fail to %s - %v", destAddr, err)
 			}
@@ -286,12 +285,10 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 			if err != nil {
 				return nil, fmt.Errorf("ssh dial fail to %s", destAddr)
 			}
-			fmt.Printf("Conn open %v\n", conn)
 			sshconn, chans, reqs, err := ssh.NewClientConn(conn, h.HostName, h.ClientConfig)
 			if err != nil {
 				return nil, fmt.Errorf("NewClientConn fail to %s", destAddr)
 			}
-			fmt.Printf("Conn open %v\n", sshconn)
 			sshClient = ssh.NewClient(sshconn, chans, reqs)
 			nclient.openClients = append(nclient.openClients, sshClient)
 			nclient.openConns = append(nclient.openConns, conn)
@@ -488,47 +485,4 @@ func termSize(fd uintptr) []byte {
 	binary.BigEndian.PutUint32(size[4:], uint32(winsize.Height))
 
 	return size
-}
-
-func main() {
-	timeout := time.Second * 10
-	key := "/Users/jimmorris/.mobiledgex/id_rsa_mex"
-	auth := Auth{Keys: []string{key}}
-
-	vers := "SSH-2.0-mobiledgex-ssh-client-1.0"
-
-	pass := 0
-	fail := 0
-	//func NewNativeClient(user, clientVersion string, host string, port int, hostAuth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
-
-	for i := 1; i < 100; i++ {
-		fmt.Printf("\nLOOP %d pass: %d fail %d\n", i, pass, fail)
-		client, err := NewNativeClient("ubuntu", vers, "80.187.128.15", 22, &auth, timeout, nil)
-		//client.AddHop("10.101.2.10", 22)
-		//	client.AddHop("10.101.2.10", 22)
-		client.AddHop("80.187.128.15", 22)
-		client.AddHop("10.101.2.101", 22)
-		client.AddHop("10.101.2.10", 22)
-
-		/*client.RemoveLastHop()
-		client.RemoveLastHop()
-		client.RemoveLastHop()
-		err = client.RemoveLastHop()
-		err = client.RemoveLastHop()*/
-
-		if err != nil {
-			fmt.Printf("NewClient ERR %v\n", err)
-			fail++
-			continue
-		}
-
-		out, err := client.Output("hostname")
-		fmt.Printf("OUT %s err %v\n", out, err)
-		if err != nil {
-			fail++
-		} else {
-			pass++
-		}
-	}
-
 }
