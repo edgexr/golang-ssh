@@ -278,7 +278,6 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 
 	for _, h := range nclient.HostDetails {
 		destAddr = fmt.Sprintf("%s:%d", h.HostName, h.Port)
-		fmt.Printf("DESTADDR %s\n", destAddr)
 		if sshClient == nil {
 			//first host
 			sshClient, err = ssh.Dial("tcp", destAddr, h.ClientConfig)
