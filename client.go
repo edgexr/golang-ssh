@@ -87,6 +87,8 @@ type Client interface {
 	// Wait waits for the command started by the Start function to exit. The
 	// returned error follows the same logic as in the exec.Cmd.Wait function.
 	Wait() error
+	// AddHpp adds a new host to the end of the list
+	AddHop(host string, port int) error
 }
 
 type HostDetail struct {
