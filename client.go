@@ -278,6 +278,7 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 
 	for _, h := range nclient.HostDetails {
 		destAddr = fmt.Sprintf("%s:%d", h.HostName, h.Port)
+		fmt.Printf("DESTADDR %s\n", destAddr)
 		if sshClient == nil {
 			//first host
 			sshClient, err = ssh.Dial("tcp", destAddr, h.ClientConfig)
@@ -291,13 +292,28 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 			nclient.saveClient(sshClient)
 			nclient.saveConn(conn)
 		} else {
-			conn, err = sshClient.Dial("tcp", destAddr)
-			if err != nil {
-				return nil, fmt.Errorf("ssh dial fail to %s", destAddr)
+			// ssh.Client dial does not use a timeout.  In order to make subsequent hops time out, use a separate timer
+			ch := make(chan string, 1)
+			go func() {
+				conn, err = sshClient.Dial("tcp", destAddr)
+				if err != nil {
+					ch <- fmt.Sprintf("ssh client dial fail to %s - %v", destAddr, err)
+				}
+				ch <- ""
+			}()
+			select {
+			case result := <-ch:
+				if result != "" {
+					return nil, fmt.Errorf(result)
+				}
+			case <-time.After(h.ClientConfig.Timeout):
+				sshClient.Close()
+				conn.Close()
+				return nil, fmt.Errorf("ssh client timeout to %s", destAddr)
 			}
 			sshconn, chans, reqs, err := ssh.NewClientConn(conn, h.HostName, h.ClientConfig)
 			if err != nil {
-				return nil, fmt.Errorf("NewClientConn fail to %s", destAddr)
+				return nil, fmt.Errorf("NewClientConn fail to %s - %v", destAddr, err)
 			}
 			sshClient = ssh.NewClient(sshconn, chans, reqs)
 			nclient.saveClient(sshClient)
@@ -324,12 +340,13 @@ func (nc *NativeClient) Session() (*ssh.Session, *ssh.Client, error) {
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) Output(command string) (string, error) {
 	session, conn, err := client.Session()
+	// even on failure, intermediate hop connections must close
+	defer client.closeAll()
 	if err != nil {
 		return "", err
 	}
 	defer session.Close()
 	defer conn.Close()
-	defer client.closeAll()
 	output, err := session.CombinedOutput(command)
 	return string(bytes.TrimSpace(output)), wrapError(err)
 }
