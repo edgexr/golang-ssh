@@ -27,6 +27,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/pkg/term"
@@ -97,14 +98,25 @@ type HostDetail struct {
 	ClientConfig *ssh.ClientConfig
 }
 
+// HopDetails stores open sessions and connections which need
+// to be tracked so they can be properly cleaned up
+type HopDetails struct {
+}
+
+// SessionInfo contains artifacts from the session that need to be cleaned up
+type SessionInfo struct {
+	openClients []*ssh.Client // list of clients along the path
+	openConns   []net.Conn    // list of clients along the path
+	openSession *ssh.Session  // current open session
+	openClient  *ssh.Client   // current open client
+	mux         sync.Mutex
+}
+
 // NativeClient is the structure for native client use
 type NativeClient struct {
 	HostDetails         []HostDetail // list of Hosts
 	ClientVersion       string       // ClientVersion is the version string to send to the server when identifying
-	openClients         []*ssh.Client
-	openConns           []net.Conn
-	openSession         *ssh.Session
-	openConn            *ssh.Client
+	SessionInfo         *SessionInfo
 	DefaultClientConfig *ssh.ClientConfig
 }
 
@@ -155,24 +167,34 @@ func (cfg *Config) hostKey() ssh.HostKeyCallback {
 }
 
 // saves SSH client so it can be closed later
-func (c *NativeClient) saveClient(sshClient *ssh.Client) {
-	c.openClients = append(c.openClients, sshClient)
+func (s *SessionInfo) saveClient(sshClient *ssh.Client) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.openClients = append(s.openClients, sshClient)
 }
 
 // saves SSH connection so it can be closed later
-func (c *NativeClient) saveConn(conn net.Conn) {
-	c.openConns = append(c.openConns, conn)
+func (s *SessionInfo) saveConn(conn net.Conn) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.openConns = append(s.openConns, conn)
 }
 
-func (c *NativeClient) closeAll() {
-	for _, cl := range c.openClients {
+func (s *SessionInfo) closeAll() {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	for _, cl := range s.openClients {
 		cl.Close()
 	}
-	for _, con := range c.openConns {
+	for _, con := range s.openConns {
 		con.Close()
 	}
-	c.openClients = nil
-	c.openConns = nil
+	s.openClients = nil
+	s.openConns = nil
+	if s.openSession != nil {
+		s.openSession.Close()
+	}
+	s.openSession = nil
 
 }
 
@@ -211,10 +233,12 @@ func NewNativeClient(user, clientVersion string, host string, port int, hostAuth
 	}
 
 	var hds []HostDetail
+	var sessionInfo SessionInfo
 	var nc = NativeClient{
 		HostDetails:         hds,
 		ClientVersion:       clientVersion,
 		DefaultClientConfig: &defaultConfig,
+		SessionInfo:         &sessionInfo,
 	}
 	err = nc.AddHop(host, port)
 	if err != nil {
@@ -267,15 +291,16 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Durati
 	}, nil
 }
 
-func (nclient *NativeClient) Connect() (*ssh.Client, error) {
+func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
 
 	var sshClient *ssh.Client
 	var destAddr string
 	var err error
 	var conn net.Conn
 
+	var sessionInfo SessionInfo
 	if len(nclient.HostDetails) == 0 {
-		return nil, fmt.Errorf("no remote hosts")
+		return nil, &sessionInfo, fmt.Errorf("no remote hosts")
 	}
 
 	for _, h := range nclient.HostDetails {
@@ -284,14 +309,14 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 			//first host
 			sshClient, err = ssh.Dial("tcp", destAddr, h.ClientConfig)
 			if err != nil {
-				return nil, fmt.Errorf("ssh dial fail to %s - %v", destAddr, err)
+				return nil, nil, fmt.Errorf("ssh dial fail to %s - %v", destAddr, err)
 			}
 			conn, err = sshClient.Dial("tcp", destAddr)
 			if err != nil {
-				return nil, fmt.Errorf("ssh client dial fail to %s - %v", destAddr, err)
+				return nil, &sessionInfo, fmt.Errorf("ssh client dial fail to %s - %v", destAddr, err)
 			}
-			nclient.saveClient(sshClient)
-			nclient.saveConn(conn)
+			sessionInfo.saveClient(sshClient)
+			sessionInfo.saveConn(conn)
 		} else {
 			// ssh.Client dial does not use a timeout.  In order to make subsequent hops time out, use a separate timer
 			ch := make(chan string, 1)
@@ -305,44 +330,46 @@ func (nclient *NativeClient) Connect() (*ssh.Client, error) {
 			select {
 			case result := <-ch:
 				if result != "" {
-					return nil, fmt.Errorf(result)
+					return nil, &sessionInfo, fmt.Errorf(result)
 				}
 			case <-time.After(h.ClientConfig.Timeout):
 				sshClient.Close()
 				conn.Close()
-				return nil, fmt.Errorf("ssh client timeout to %s", destAddr)
+				return nil, &sessionInfo, fmt.Errorf("ssh client timeout to %s", destAddr)
 			}
 			sshconn, chans, reqs, err := ssh.NewClientConn(conn, h.HostName, h.ClientConfig)
 			if err != nil {
-				return nil, fmt.Errorf("NewClientConn fail to %s - %v", destAddr, err)
+				return nil, &sessionInfo, fmt.Errorf("NewClientConn fail to %s - %v", destAddr, err)
 			}
 			sshClient = ssh.NewClient(sshconn, chans, reqs)
-			nclient.saveClient(sshClient)
-			nclient.saveConn(conn)
+			sessionInfo.saveClient(sshClient)
+			sessionInfo.saveConn(conn)
 		}
 	} //for
 
-	return sshClient, nil
+	return sshClient, &sessionInfo, nil
 }
 
-func (nc *NativeClient) Session() (*ssh.Session, *ssh.Client, error) {
-	client, err := nc.Connect()
+func (nc *NativeClient) Session() (*ssh.Session, *ssh.Client, *SessionInfo, error) {
+	client, sessionInfo, err := nc.Connect()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, sessionInfo, err
 	}
 	session, err := client.NewSession()
 	if err != nil {
 		client.Close()
-		return nil, nil, err
+		return nil, nil, sessionInfo, err
 	}
-	return session, client, nil
+	return session, client, sessionInfo, nil
 }
 
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) Output(command string) (string, error) {
-	session, conn, err := client.Session()
+	session, conn, sessionInfo, err := client.Session()
 	// even on failure, intermediate hop connections must close
-	defer client.closeAll()
+	if sessionInfo != nil {
+		defer sessionInfo.closeAll()
+	}
 	if err != nil {
 		return "", err
 	}
@@ -354,13 +381,15 @@ func (client *NativeClient) Output(command string) (string, error) {
 
 // Output returns the output of the command run on the remote host as well as a pty.
 func (client *NativeClient) OutputWithPty(command string) (string, error) {
-	session, conn, err := client.Session()
+	session, conn, sessionInfo, err := client.Session()
+	if sessionInfo != nil {
+		defer sessionInfo.closeAll()
+	}
 	if err != nil {
 		return "", nil
 	}
 	defer session.Close()
 	defer conn.Close()
-	defer client.closeAll()
 	fd := int(os.Stdin.Fd())
 
 	termWidth, termHeight, err := terminal.GetSize(fd)
@@ -388,7 +417,10 @@ func (client *NativeClient) OutputWithPty(command string) (string, error) {
 // Start starts the specified command without waiting for it to finish. You
 // have to call the Wait function for that.
 func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.ReadCloser, sin io.WriteCloser, reterr error) {
-	session, conn, err := client.Session()
+	session, conn, sessionInfo, err := client.Session()
+	if sessionInfo != nil {
+		defer sessionInfo.closeAll()
+	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -414,20 +446,18 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 	if err := session.Start(command); err != nil {
 		return nil, nil, nil, err
 	}
-	client.openSession = session
-	client.openConn = conn
+	sessionInfo.openSession = session
+	sessionInfo.openClient = conn
 	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), stdin, nil
 }
 
 // Wait waits for the command started by the Start function to exit. The
 // returned error follows the same logic as in the exec.Cmd.Wait function.
 func (client *NativeClient) Wait() error {
-	err := client.openSession.Wait()
-	_ = client.openSession.Close()
-	client.openConn.Close()
-	client.openSession = nil
-	client.openConn = nil
-	client.closeAll()
+	err := client.SessionInfo.openSession.Wait()
+	_ = client.SessionInfo.openSession.Close()
+	client.SessionInfo.closeAll()
+
 	return err
 }
 
