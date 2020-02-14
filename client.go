@@ -227,9 +227,6 @@ func NewNativeClient(user, clientVersion string, host string, port int, hostAuth
 	if err != nil {
 		return nil, fmt.Errorf("Error getting host config for native Go SSH: %s", err)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("Error getting config for native Go SSH: %s", err)
-	}
 
 	var hds []HostDetail
 	var sessionInfo SessionInfo
@@ -353,43 +350,41 @@ func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
 	return sshClient, &sessionInfo, nil
 }
 
-func (nc *NativeClient) Session() (*ssh.Session, *ssh.Client, *SessionInfo, error) {
+func (nc *NativeClient) Session() (*ssh.Session, *SessionInfo, error) {
 	client, sessionInfo, err := nc.Connect()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	session, err := client.NewSession()
 	if err != nil {
 		client.Close()
 		sessionInfo.CloseAll()
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return session, client, sessionInfo, nil
+	return session, sessionInfo, nil
 }
 
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) Output(command string) (string, error) {
-	session, conn, sessionInfo, err := client.Session()
+	session, sessionInfo, err := client.Session()
 	// even on failure, intermediate hop connections must close
 	if err != nil {
 		return "", err
 	}
 	defer sessionInfo.CloseAll()
 	defer session.Close()
-	defer conn.Close()
 	output, err := session.CombinedOutput(command)
 	return string(bytes.TrimSpace(output)), wrapError(err)
 }
 
 // Output returns the output of the command run on the remote host as well as a pty.
 func (client *NativeClient) OutputWithPty(command string) (string, error) {
-	session, conn, sessionInfo, err := client.Session()
+	session, sessionInfo, err := client.Session()
 	if err != nil {
 		return "", nil
 	}
 	defer sessionInfo.CloseAll()
 	defer session.Close()
-	defer conn.Close()
 
 	fd := int(os.Stdin.Fd())
 
@@ -418,7 +413,7 @@ func (client *NativeClient) OutputWithPty(command string) (string, error) {
 // Start starts the specified command without waiting for it to finish. You
 // have to call the Wait function for that.
 func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.ReadCloser, sin io.WriteCloser, reterr error) {
-	session, conn, sessionInfo, err := client.Session()
+	session, sessionInfo, err := client.Session()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -426,7 +421,6 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 		if reterr != nil {
 			sessionInfo.CloseAll()
 			session.Close()
-			conn.Close()
 		}
 	}()
 
@@ -446,7 +440,6 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 		return nil, nil, nil, err
 	}
 	sessionInfo.openSession = session
-	sessionInfo.saveClient(conn)
 	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), stdin, nil
 }
 
