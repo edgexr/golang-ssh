@@ -18,7 +18,7 @@ var vers string
 // this data is subject to change; it needs to be populated with 2 working servers
 // that can reach each other via the key provided
 func initTestData() {
-	testServers = []string{"35.199.188.102", "35.199.188.102", "37.50.200.27"} // twice thru the first svr and then to another
+	testServers = []string{"35.199.188.102", "35.199.188.102", "80.187.128.13"} // twice thru the first svr and then to another
 	key = os.Getenv("HOME") + "/.mobiledgex/id_rsa_mex"
 	timeout = time.Second * 10
 	vers = "SSH-2.0-mobiledgex-ssh-client-1.0"
