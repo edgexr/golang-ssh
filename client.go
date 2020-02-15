@@ -346,12 +346,16 @@ func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
 			select {
 			case result := <-ch:
 				if result != "" {
-					conn.Close()
+					if conn != nil {
+						conn.Close()
+					}
 					sessionInfo.CloseAll()
 					return nil, nil, fmt.Errorf(result)
 				}
 			case <-time.After(h.ClientConfig.Timeout):
-				conn.Close()
+				if conn != nil {
+					conn.Close()
+				}
 				sessionInfo.CloseAll()
 				return nil, nil, fmt.Errorf("ssh client timeout to %s", destAddr)
 			}
