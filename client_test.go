@@ -41,8 +41,9 @@ func TestNativeClient(t *testing.T) {
 	results := make(chan Result, numThread)
 
 	for hopTest := 0; hopTest < len(testServers); hopTest++ {
+		var err error
 		if hopTest != 0 {
-			err := client.AddHop(testServers[hopTest], 22)
+			client, err = client.AddHop(testServers[hopTest], 22)
 			require.Nil(t, err, "addhop")
 		}
 		for i := 0; i < numThread; i++ {
@@ -59,9 +60,9 @@ func TestNativeClient(t *testing.T) {
 		}
 	}
 
-	// now add bad hop and check for error
-	client.AddHop("10.10.10.10", 22)
-	_, err = client.Output("hello")
+	//now add bad hop and check for error
+	badClient, _ := client.AddHop("10.10.10.10", 22)
+	_, err = badClient.Output("echo hello")
+	require.NotNil(t, err)
 	require.Contains(t, err.Error(), "ssh client timeout")
-
 }

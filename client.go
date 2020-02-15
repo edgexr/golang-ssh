@@ -88,8 +88,9 @@ type Client interface {
 	// Wait waits for the command started by the Start function to exit. The
 	// returned error follows the same logic as in the exec.Cmd.Wait function.
 	Wait() error
-	// AddHpp adds a new host to the end of the list
-	AddHop(host string, port int) error
+	// AddHop adds a new host to the end of the list and returns a new client.
+	// The original client is unchanged
+	AddHop(host string, port int) (Client, error)
 }
 
 type HostDetail struct {
@@ -197,25 +198,45 @@ func (s *SessionInfo) CloseAll() {
 
 }
 
-// AddHopWithConfig adds a new hop with the specifified config
-func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) error {
-	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: config}
-	c.HostDetails = append(c.HostDetails, hostDetail)
-	return nil
+// Copy copies the NativeClient with empty SessionInfo
+func (c *NativeClient) Copy() *NativeClient {
+	// copy the existing host details
+	hds := make([]HostDetail, len(c.HostDetails))
+	copy(hds, c.HostDetails)
+
+	var sessionInfo SessionInfo
+	var copyClient = NativeClient{
+		HostDetails:         hds,
+		ClientVersion:       c.ClientVersion,
+		DefaultClientConfig: c.DefaultClientConfig,
+		SessionInfo:         &sessionInfo,
+	}
+	return &copyClient
 }
 
-// AddHopWithConfig adds a new hop with the default config when the client was created
-func (c *NativeClient) AddHop(host string, port int) error {
+// AddHopWithConfig adds a new host to the end of the list and returns a new client using the provided config
+// The original client is unchanged
+func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) (Client, error) {
+	newClient := c.Copy()
+	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: config}
+	newClient.HostDetails = append(newClient.HostDetails, hostDetail)
+	return newClient, nil
+}
+
+// AddHop adds a new host to the end of the list and returns a new client using the same config
+// The original client is unchanged
+func (c *NativeClient) AddHop(host string, port int) (Client, error) {
 	return c.AddHopWithConfig(host, port, c.DefaultClientConfig)
 }
 
-// RemoveLastHop removes the last server hop
-func (c *NativeClient) RemoveLastHop() error {
+// RemoveLastHop returns a new client which is a copy of the original with the last hop removed
+func (c *NativeClient) RemoveLastHop() (Client, error) {
 	if len(c.HostDetails) < 1 {
-		return fmt.Errorf("no hops to remove")
+		return nil, fmt.Errorf("no hops to remove")
 	}
-	c.HostDetails = c.HostDetails[:len(c.HostDetails)-1]
-	return nil
+	newClient := c.Copy()
+	newClient.HostDetails = newClient.HostDetails[:len(newClient.HostDetails)-1]
+	return newClient, nil
 }
 
 // NewNativeClient creates a new Client using the golang ssh library
@@ -228,17 +249,14 @@ func NewNativeClient(user, clientVersion string, host string, port int, hostAuth
 		return nil, fmt.Errorf("Error getting host config for native Go SSH: %s", err)
 	}
 
-	var hds []HostDetail
+	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: &defaultConfig}
+	hd := []HostDetail{hostDetail}
 	var sessionInfo SessionInfo
 	var nc = NativeClient{
-		HostDetails:         hds,
+		HostDetails:         hd,
 		ClientVersion:       clientVersion,
 		DefaultClientConfig: &defaultConfig,
 		SessionInfo:         &sessionInfo,
-	}
-	err = nc.AddHop(host, port)
-	if err != nil {
-		return nil, err
 	}
 	return &nc, nil
 }
@@ -339,7 +357,7 @@ func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
 			}
 			sshconn, chans, reqs, err := ssh.NewClientConn(conn, h.HostName, h.ClientConfig)
 			if err != nil {
-				return nil, &sessionInfo, fmt.Errorf("NewClientConn fail to %s - %v", destAddr, err)
+				return nil, &sessionInfo, fmt.Errorf("NewClientConn fail  to %s - %v", destAddr, err)
 			}
 			sshClient = ssh.NewClient(sshconn, chans, reqs)
 			sessionInfo.saveClient(sshClient)
