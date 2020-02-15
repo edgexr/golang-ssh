@@ -89,8 +89,8 @@ type Client interface {
 	// returned error follows the same logic as in the exec.Cmd.Wait function.
 	Wait() error
 	// AddHop adds a new host to the end of the list and returns a new client.
-	// The original client is unchanged
-	AddHop(host string, port int) (Client, error)
+	// The original client is unchanged.
+	AddHop(host string, port int) (interface{}, error)
 }
 
 type HostDetail struct {
@@ -216,7 +216,7 @@ func (c *NativeClient) Copy() *NativeClient {
 
 // AddHopWithConfig adds a new host to the end of the list and returns a new client using the provided config
 // The original client is unchanged
-func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) (Client, error) {
+func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) (interface{}, error) {
 	newClient := c.Copy()
 	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: config}
 	newClient.HostDetails = append(newClient.HostDetails, hostDetail)
@@ -225,12 +225,12 @@ func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.Clien
 
 // AddHop adds a new host to the end of the list and returns a new client using the same config
 // The original client is unchanged
-func (c *NativeClient) AddHop(host string, port int) (Client, error) {
+func (c *NativeClient) AddHop(host string, port int) (interface{}, error) {
 	return c.AddHopWithConfig(host, port, c.DefaultClientConfig)
 }
 
 // RemoveLastHop returns a new client which is a copy of the original with the last hop removed
-func (c *NativeClient) RemoveLastHop() (Client, error) {
+func (c *NativeClient) RemoveLastHop() (interface{}, error) {
 	if len(c.HostDetails) < 1 {
 		return nil, fmt.Errorf("no hops to remove")
 	}
