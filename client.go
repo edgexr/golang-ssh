@@ -27,11 +27,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/pkg/term"
-	"github.com/docker/machine/libmachine/log"
-	"github.com/docker/machine/libmachine/mcnutils"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -71,7 +70,7 @@ func wrapError(err error) error {
 
 // Client is a relic interface that both native and external client matched
 type Client interface {
-	// Output returns the output of the command run on the remote host.
+	// Output returns the output of the command run on the host.
 	Output(command string) (string, error)
 
 	// Shell requests a shell from the remote. If an arg is passed, it tries to
@@ -89,19 +88,36 @@ type Client interface {
 	// Wait waits for the command started by the Start function to exit. The
 	// returned error follows the same logic as in the exec.Cmd.Wait function.
 	Wait() error
+	// AddHop adds a new host to the end of the list and returns a new client.
+	// The original client is unchanged.
+	AddHop(host string, port int) (Client, error)
+}
+
+type HostDetail struct {
+	HostName     string
+	Port         int
+	ClientConfig *ssh.ClientConfig
+}
+
+// HopDetails stores open sessions and connections which need
+// to be tracked so they can be properly cleaned up
+type HopDetails struct {
+}
+
+// SessionInfo contains artifacts from the session that need to be cleaned up
+type SessionInfo struct {
+	openClients []*ssh.Client // list of clients along the path
+	openConns   []net.Conn    // list of clients along the path
+	openSession *ssh.Session  // current open session
+	mux         sync.Mutex
 }
 
 // NativeClient is the structure for native client use
 type NativeClient struct {
-	HostConfig    ssh.ClientConfig // Config defines the golang ssh client config
-	ProxyConfig   ssh.ClientConfig // Config defines the golang ssh client config
-	Hostname      string           // Hostname is the host to connect to
-	Port          int              // Port is the port to connect to
-	ProxyHost     string           // Optional proxy host
-	ProxyPort     int              // Optional proxy port
-	ClientVersion string           // ClientVersion is the version string to send to the server when identifying
-	openSession   *ssh.Session
-	openConn      *ssh.Client
+	HostDetails         []HostDetail // list of Hosts
+	ClientVersion       string       // ClientVersion is the version string to send to the server when identifying
+	SessionInfo         *SessionInfo
+	DefaultClientConfig *ssh.ClientConfig
 }
 
 // Auth contains auth info
@@ -150,37 +166,103 @@ func (cfg *Config) hostKey() ssh.HostKeyCallback {
 	return ssh.InsecureIgnoreHostKey()
 }
 
+// saves SSH client so it can be closed later
+func (s *SessionInfo) saveClient(sshClient *ssh.Client) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.openClients = append(s.openClients, sshClient)
+}
+
+// saves SSH connection so it can be closed later
+func (s *SessionInfo) saveConn(conn net.Conn) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.openConns = append(s.openConns, conn)
+}
+
+func (s *SessionInfo) CloseAll() {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	for _, cl := range s.openClients {
+		cl.Close()
+	}
+	for _, con := range s.openConns {
+		con.Close()
+	}
+	s.openClients = nil
+	s.openConns = nil
+	if s.openSession != nil {
+		s.openSession.Close()
+	}
+	s.openSession = nil
+
+}
+
+// Copy copies the NativeClient with empty SessionInfo
+func (c *NativeClient) Copy() *NativeClient {
+	// copy the existing host details
+	hds := make([]HostDetail, len(c.HostDetails))
+	copy(hds, c.HostDetails)
+
+	var sessionInfo SessionInfo
+	var copyClient = NativeClient{
+		HostDetails:         hds,
+		ClientVersion:       c.ClientVersion,
+		DefaultClientConfig: c.DefaultClientConfig,
+		SessionInfo:         &sessionInfo,
+	}
+	return &copyClient
+}
+
+// AddHopWithConfig adds a new host to the end of the list and returns a new client using the provided config
+// The original client is unchanged
+func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) (Client, error) {
+	newClient := c.Copy()
+	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: config}
+	newClient.HostDetails = append(newClient.HostDetails, hostDetail)
+	return newClient, nil
+}
+
+// AddHop adds a new host to the end of the list and returns a new client using the same config
+// The original client is unchanged
+func (c *NativeClient) AddHop(host string, port int) (Client, error) {
+	return c.AddHopWithConfig(host, port, c.DefaultClientConfig)
+}
+
+// RemoveLastHop returns a new client which is a copy of the original with the last hop removed
+func (c *NativeClient) RemoveLastHop() (interface{}, error) {
+	if len(c.HostDetails) < 1 {
+		return nil, fmt.Errorf("no hops to remove")
+	}
+	newClient := c.Copy()
+	newClient.HostDetails = newClient.HostDetails[:len(newClient.HostDetails)-1]
+	return newClient, nil
+}
+
 // NewNativeClient creates a new Client using the golang ssh library
-func NewNativeClient(user, host, clientVersion string, port int, proxyHost string, proxyPort int, hostAuth *Auth, proxyAuth *Auth, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
+func NewNativeClient(user, clientVersion string, host string, port int, hostAuth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
 	if clientVersion == "" {
 		clientVersion = "SSH-2.0-Go"
 	}
-
-	hostConfig, err := NewNativeConfig(user, clientVersion, hostAuth, hostKeyCallback)
+	defaultConfig, err := NewNativeConfig(user, clientVersion, hostAuth, timeout, hostKeyCallback)
 	if err != nil {
 		return nil, fmt.Errorf("Error getting host config for native Go SSH: %s", err)
 	}
-	var proxyConfig ssh.ClientConfig
-	if proxyHost != "" {
-		proxyConfig, err = NewNativeConfig(user, clientVersion, proxyAuth, hostKeyCallback)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("Error getting proxy config for native Go SSH: %s", err)
-	}
 
-	return &NativeClient{
-		HostConfig:    hostConfig,
-		ProxyConfig:   proxyConfig,
-		Hostname:      host,
-		Port:          port,
-		ProxyHost:     proxyHost,
-		ProxyPort:     proxyPort,
-		ClientVersion: clientVersion,
-	}, nil
+	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: &defaultConfig}
+	hd := []HostDetail{hostDetail}
+	var sessionInfo SessionInfo
+	var nc = NativeClient{
+		HostDetails:         hd,
+		ClientVersion:       clientVersion,
+		DefaultClientConfig: &defaultConfig,
+		SessionInfo:         &sessionInfo,
+	}
+	return &nc, nil
 }
 
 // NewNativeConfig returns a golang ssh client config struct for use by the NativeClient
-func NewNativeConfig(user, clientVersion string, auth *Auth, hostKeyCallback ssh.HostKeyCallback) (ssh.ClientConfig, error) {
+func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (ssh.ClientConfig, error) {
 	var (
 		authMethods []ssh.AuthMethod
 	)
@@ -219,122 +301,112 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, hostKeyCallback ssh
 		Auth:            authMethods,
 		ClientVersion:   clientVersion,
 		HostKeyCallback: hostKeyCallback,
+		Timeout:         timeout,
 	}, nil
 }
 
-func (client *NativeClient) dialSuccess() bool {
+func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
+
+	var sshClient *ssh.Client
+	var destAddr string
+	var err error
 	var conn net.Conn
-	var proxyClient *ssh.Client
-	var err error
-	if client.ProxyHost != "" {
-		log.Debugf("Connecting via proxy: %s", client.ProxyHost)
-		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.ProxyConfig)
-		if err != nil {
-			log.Infof("proxy error: v", err)
-			return false
-		}
-		conn, err = proxyClient.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port))
-		if err != nil {
-			log.Debugf("Error dialing TCP: %s", err)
-			proxyClient.Close()
-			return false
-		}
-	} else {
-		conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port))
-		if err != nil {
-			log.Debugf("Error dialing TCP: %s", err)
-			return false
-		}
+
+	var sessionInfo SessionInfo
+	if len(nclient.HostDetails) == 0 {
+		return nil, &sessionInfo, fmt.Errorf("no remote hosts")
 	}
-	conn.Close()
-	if proxyClient != nil {
-		proxyClient.Close()
-	}
-	return true
+
+	for _, h := range nclient.HostDetails {
+		destAddr = fmt.Sprintf("%s:%d", h.HostName, h.Port)
+		if sshClient == nil {
+			//first host
+			sshClient, err = ssh.Dial("tcp", destAddr, h.ClientConfig)
+			if err != nil {
+				sessionInfo.CloseAll()
+				return nil, nil, fmt.Errorf("ssh dial fail to %s - %v", destAddr, err)
+			}
+			sessionInfo.saveClient(sshClient)
+			conn, err = sshClient.Dial("tcp", destAddr)
+			if err != nil {
+				sessionInfo.CloseAll()
+				return nil, nil, fmt.Errorf("ssh client dial fail to %s - %v", destAddr, err)
+			}
+			sessionInfo.saveConn(conn)
+		} else {
+			// ssh.Client dial does not use a timeout.  In order to make subsequent hops time out, use a separate timer
+			ch := make(chan string, 1)
+			go func() {
+				conn, err = sshClient.Dial("tcp", destAddr)
+				if err != nil {
+					ch <- fmt.Sprintf("ssh client dial fail to %s - %v", destAddr, err)
+				}
+				ch <- ""
+			}()
+			select {
+			case result := <-ch:
+				if result != "" {
+					if conn != nil {
+						conn.Close()
+					}
+					sessionInfo.CloseAll()
+					return nil, nil, fmt.Errorf(result)
+				}
+			case <-time.After(h.ClientConfig.Timeout):
+				if conn != nil {
+					conn.Close()
+				}
+				sessionInfo.CloseAll()
+				return nil, nil, fmt.Errorf("ssh client timeout to %s", destAddr)
+			}
+			sshconn, chans, reqs, err := ssh.NewClientConn(conn, h.HostName, h.ClientConfig)
+			if err != nil {
+				return nil, &sessionInfo, fmt.Errorf("NewClientConn fail  to %s - %v", destAddr, err)
+			}
+			sshClient = ssh.NewClient(sshconn, chans, reqs)
+			sessionInfo.saveClient(sshClient)
+			sessionInfo.saveConn(conn)
+		}
+	} //for
+
+	return sshClient, &sessionInfo, nil
 }
 
-func (client *NativeClient) Connect() (*ssh.Client, *ssh.Client, error) {
-	var conn *ssh.Client
-	var proxyClient *ssh.Client
-
-	var err error
-	if err = mcnutils.WaitFor(client.dialSuccess); err != nil {
-		return nil, nil, fmt.Errorf("Error attempting SSH client dial: %s", err)
-	}
-
-	if client.ProxyHost != "" {
-		proxyClient, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.ProxyHost, client.ProxyPort), &client.ProxyConfig)
-		if err != nil {
-			log.Debugf("proxy error: %v", err)
-			return nil, nil, err
-		}
-		nc, err := proxyClient.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port))
-		if err != nil {
-			log.Debugf("Error dialing TCP: %s", err)
-			proxyClient.Close()
-			return nil, nil, err
-		}
-		ncc, chans, reqs, err := ssh.NewClientConn(nc, client.Hostname, &client.HostConfig)
-		if err != nil {
-			proxyClient.Close()
-			return nil, nil, err
-		}
-		conn = ssh.NewClient(ncc, chans, reqs)
-
-	} else {
-		conn, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.HostConfig)
-	}
+func (nc *NativeClient) Session() (*ssh.Session, *SessionInfo, error) {
+	client, sessionInfo, err := nc.Connect()
 	if err != nil {
-		return nil, nil, fmt.Errorf("Mysterious error dialing TCP for SSH (we already succeeded at least once) : %s", err)
+		return nil, nil, err
 	}
-
-	return proxyClient, conn, nil
-}
-
-func (client *NativeClient) Session() (*ssh.Session, *ssh.Client, *ssh.Client, error) {
-	proxy, conn, err := client.Connect()
+	session, err := client.NewSession()
 	if err != nil {
-		return nil, nil, nil, err
+		client.Close()
+		sessionInfo.CloseAll()
+		return nil, nil, err
 	}
-	session, err := conn.NewSession()
-	if err != nil {
-		conn.Close()
-		if proxy != nil {
-			proxy.Close()
-		}
-		return nil, nil, nil, err
-	}
-	return session, proxy, conn, nil
+	return session, sessionInfo, nil
 }
 
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) Output(command string) (string, error) {
-	session, proxy, conn, err := client.Session()
+	session, sessionInfo, err := client.Session()
+	// even on failure, intermediate hop connections must close
 	if err != nil {
 		return "", err
 	}
+	defer sessionInfo.CloseAll()
 	defer session.Close()
-	defer conn.Close()
-	if proxy != nil {
-		defer proxy.Close()
-	}
-
 	output, err := session.CombinedOutput(command)
-
 	return string(bytes.TrimSpace(output)), wrapError(err)
 }
 
 // Output returns the output of the command run on the remote host as well as a pty.
 func (client *NativeClient) OutputWithPty(command string) (string, error) {
-	session, proxy, conn, err := client.Session()
+	session, sessionInfo, err := client.Session()
 	if err != nil {
 		return "", nil
 	}
+	defer sessionInfo.CloseAll()
 	defer session.Close()
-	defer conn.Close()
-	if proxy != nil {
-		defer proxy.Close()
-	}
 
 	fd := int(os.Stdin.Fd())
 
@@ -363,17 +435,14 @@ func (client *NativeClient) OutputWithPty(command string) (string, error) {
 // Start starts the specified command without waiting for it to finish. You
 // have to call the Wait function for that.
 func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.ReadCloser, sin io.WriteCloser, reterr error) {
-	session, proxy, conn, err := client.Session()
+	session, sessionInfo, err := client.Session()
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	defer func() {
 		if reterr != nil {
+			sessionInfo.CloseAll()
 			session.Close()
-			conn.Close()
-			if proxy != nil {
-				proxy.Close()
-			}
 		}
 	}()
 
@@ -392,20 +461,17 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 	if err := session.Start(command); err != nil {
 		return nil, nil, nil, err
 	}
-
-	client.openSession = session
-	client.openConn = conn
+	sessionInfo.openSession = session
 	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), stdin, nil
 }
 
 // Wait waits for the command started by the Start function to exit. The
 // returned error follows the same logic as in the exec.Cmd.Wait function.
 func (client *NativeClient) Wait() error {
-	err := client.openSession.Wait()
-	_ = client.openSession.Close()
-	client.openConn.Close()
-	client.openSession = nil
-	client.openConn = nil
+	err := client.SessionInfo.openSession.Wait()
+	_ = client.SessionInfo.openSession.Close()
+	client.SessionInfo.CloseAll()
+
 	return err
 }
 
@@ -415,7 +481,10 @@ func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...s
 	var (
 		termWidth, termHeight = 80, 24
 	)
-	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.Hostname, client.Port), &client.HostConfig)
+	if len(client.HostDetails) == 0 {
+		return fmt.Errorf("no hops available")
+	}
+	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.HostDetails[0].HostName, client.HostDetails[0].Port), client.HostDetails[0].ClientConfig)
 	if err != nil {
 		return err
 	}
