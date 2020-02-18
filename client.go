@@ -90,7 +90,7 @@ type Client interface {
 	Wait() error
 	// AddHop adds a new host to the end of the list and returns a new client.
 	// The original client is unchanged.
-	AddHop(host string, port int) (interface{}, error)
+	AddHop(host string, port int) (Client, error)
 }
 
 type HostDetail struct {
@@ -216,7 +216,7 @@ func (c *NativeClient) Copy() *NativeClient {
 
 // AddHopWithConfig adds a new host to the end of the list and returns a new client using the provided config
 // The original client is unchanged
-func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) (interface{}, error) {
+func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.ClientConfig) (Client, error) {
 	newClient := c.Copy()
 	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: config}
 	newClient.HostDetails = append(newClient.HostDetails, hostDetail)
@@ -225,7 +225,7 @@ func (c *NativeClient) AddHopWithConfig(host string, port int, config *ssh.Clien
 
 // AddHop adds a new host to the end of the list and returns a new client using the same config
 // The original client is unchanged
-func (c *NativeClient) AddHop(host string, port int) (interface{}, error) {
+func (c *NativeClient) AddHop(host string, port int) (Client, error) {
 	return c.AddHopWithConfig(host, port, c.DefaultClientConfig)
 }
 

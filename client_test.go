@@ -62,8 +62,7 @@ func TestNativeClient(t *testing.T) {
 
 	//now add bad hop and check for error
 	badClient, _ := client.AddHop("10.10.10.10", 22)
-	client = badClient.(Client)
-	_, err = client.Output("echo hello")
+	_, err = badClient.Output("echo hello")
 	require.NotNil(t, err)
 	require.Contains(t, err.Error(), "ssh client timeout")
 }
