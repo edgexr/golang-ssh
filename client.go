@@ -73,6 +73,10 @@ type Client interface {
 	// Output returns the output of the command run on the host.
 	Output(command string) (string, error)
 
+	// OutputWithTimeout returns the output of the command run on the host.
+	// call will timeout within a set timeout
+	OutputWithTimeout(command string, Timeout time.Duration) (string, error)
+
 	// Shell requests a shell from the remote. If an arg is passed, it tries to
 	// exec them on the server.
 	Shell(sin io.Reader, sout, serr io.Writer, args ...string) error
@@ -305,12 +309,13 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Durati
 	}, nil
 }
 
-func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
+func (nclient *NativeClient) Connect(timeout time.Duration) (*ssh.Client, *SessionInfo, error) {
 
 	var sshClient *ssh.Client
 	var destAddr string
 	var err error
 	var conn net.Conn
+	var defTimout time.Duration
 
 	var sessionInfo SessionInfo
 	if len(nclient.HostDetails) == 0 {
@@ -321,7 +326,11 @@ func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
 		destAddr = fmt.Sprintf("%s:%d", h.HostName, h.Port)
 		if sshClient == nil {
 			//first host
+			// save the original timeout if we are passing a non-default one
+			defTimout = h.ClientConfig.Timeout
+			h.ClientConfig.Timeout = timeout
 			sshClient, err = ssh.Dial("tcp", destAddr, h.ClientConfig)
+			h.ClientConfig.Timeout = defTimout
 			if err != nil {
 				sessionInfo.CloseAll()
 				return nil, nil, fmt.Errorf("ssh dial fail to %s - %v", destAddr, err)
@@ -352,7 +361,7 @@ func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
 					sessionInfo.CloseAll()
 					return nil, nil, fmt.Errorf(result)
 				}
-			case <-time.After(h.ClientConfig.Timeout):
+			case <-time.After(timeout):
 				if conn != nil {
 					conn.Close()
 				}
@@ -372,8 +381,8 @@ func (nclient *NativeClient) Connect() (*ssh.Client, *SessionInfo, error) {
 	return sshClient, &sessionInfo, nil
 }
 
-func (nc *NativeClient) Session() (*ssh.Session, *SessionInfo, error) {
-	client, sessionInfo, err := nc.Connect()
+func (nc *NativeClient) Session(timeout time.Duration) (*ssh.Session, *SessionInfo, error) {
+	client, sessionInfo, err := nc.Connect(timeout)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -388,7 +397,12 @@ func (nc *NativeClient) Session() (*ssh.Session, *SessionInfo, error) {
 
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) Output(command string) (string, error) {
-	session, sessionInfo, err := client.Session()
+	return client.OutputWithTimeout(command, client.DefaultClientConfig.Timeout)
+}
+
+// Output returns the output of the command run on the remote host.
+func (client *NativeClient) OutputWithTimeout(command string, timeout time.Duration) (string, error) {
+	session, sessionInfo, err := client.Session(timeout)
 	// even on failure, intermediate hop connections must close
 	if err != nil {
 		return "", err
@@ -401,7 +415,7 @@ func (client *NativeClient) Output(command string) (string, error) {
 
 // Output returns the output of the command run on the remote host as well as a pty.
 func (client *NativeClient) OutputWithPty(command string) (string, error) {
-	session, sessionInfo, err := client.Session()
+	session, sessionInfo, err := client.Session(client.DefaultClientConfig.Timeout)
 	if err != nil {
 		return "", nil
 	}
@@ -435,7 +449,7 @@ func (client *NativeClient) OutputWithPty(command string) (string, error) {
 // Start starts the specified command without waiting for it to finish. You
 // have to call the Wait function for that.
 func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.ReadCloser, sin io.WriteCloser, reterr error) {
-	session, sessionInfo, err := client.Session()
+	session, sessionInfo, err := client.Session(client.DefaultClientConfig.Timeout)
 	if err != nil {
 		return nil, nil, nil, err
 	}
