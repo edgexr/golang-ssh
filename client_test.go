@@ -14,6 +14,8 @@ var testServers []string
 var key string
 var timeout time.Duration
 var vers string
+var nonDefaultTimeout time.Duration
+var nullServer string
 
 // this data is subject to change; it needs to be populated with 2 working servers
 // that can reach each other via the key provided
@@ -22,6 +24,8 @@ func initTestData() {
 	key = os.Getenv("HOME") + "/.mobiledgex/id_rsa_mex"
 	timeout = time.Second * 10
 	vers = "SSH-2.0-mobiledgex-ssh-client-1.0"
+	nonDefaultTimeout = timeout / 4
+	nullServer = "192.0.2.1" // 192.0.2.1/24 (TEST-NET-1)[RFC5737]
 }
 
 type Result struct {
@@ -65,4 +69,21 @@ func TestNativeClient(t *testing.T) {
 	_, err = badClient.Output("echo hello")
 	require.NotNil(t, err)
 	require.Contains(t, err.Error(), "ssh client timeout")
+
+	// test non-default timeout - connect to
+	client, err = NewNativeClient("ubuntu", vers, nullServer, 22, &auth, timeout, nil)
+	require.Nil(t, err, "NewNativeClient")
+	ch := make(chan Result, 1)
+	go func() {
+		out, err := client.OutputWithTimeout("echo abc", nonDefaultTimeout)
+		ch <- Result{"", out, err}
+	}()
+	// we should make sure that a non-default timeout is used
+	select {
+	case result := <-ch:
+		require.NotNil(t, result.err)
+		require.Contains(t, result.err.Error(), "timeout")
+	case <-time.After(timeout / 2):
+		require.Fail(t, "Error - Non-default timeout was ignored")
+	}
 }
