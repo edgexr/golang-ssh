@@ -315,7 +315,7 @@ func (nclient *NativeClient) Connect(timeout time.Duration) (*ssh.Client, *Sessi
 	var destAddr string
 	var err error
 	var conn net.Conn
-	var defTimout time.Duration
+	var configWithTimeout ssh.ClientConfig
 
 	var sessionInfo SessionInfo
 	if len(nclient.HostDetails) == 0 {
@@ -326,11 +326,10 @@ func (nclient *NativeClient) Connect(timeout time.Duration) (*ssh.Client, *Sessi
 		destAddr = fmt.Sprintf("%s:%d", h.HostName, h.Port)
 		if sshClient == nil {
 			//first host
-			// save the original timeout if we are passing a non-default one
-			defTimout = h.ClientConfig.Timeout
-			h.ClientConfig.Timeout = timeout
-			sshClient, err = ssh.Dial("tcp", destAddr, h.ClientConfig)
-			h.ClientConfig.Timeout = defTimout
+			// make a copy of a client config to use differetnt timeout
+			configWithTimeout = *h.ClientConfig
+			configWithTimeout.Timeout = timeout
+			sshClient, err = ssh.Dial("tcp", destAddr, &configWithTimeout)
 			if err != nil {
 				sessionInfo.CloseAll()
 				return nil, nil, fmt.Errorf("ssh dial fail to %s - %v", destAddr, err)
