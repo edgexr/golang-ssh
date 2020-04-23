@@ -494,19 +494,12 @@ func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...s
 	var (
 		termWidth, termHeight = 80, 24
 	)
-	if len(client.HostDetails) == 0 {
-		return fmt.Errorf("no hops available")
-	}
-	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", client.HostDetails[0].HostName, client.HostDetails[0].Port), client.HostDetails[0].ClientConfig)
+	session, sessionInfo, err := client.Session(client.DefaultClientConfig.Timeout)
+	// even on failure, intermediate hop connections must close
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-
-	session, err := conn.NewSession()
-	if err != nil {
-		return err
-	}
+	defer sessionInfo.CloseAll()
 	defer session.Close()
 
 	session.Stdout = sout
