@@ -51,11 +51,11 @@ func TestNativeClient(t *testing.T) {
 			require.Nil(t, err, "addhop")
 		}
 		for i := 0; i < numThread; i++ {
-			go func() {
+			go func(i int) {
 				expected := fmt.Sprintf("testing: %d", i)
 				out, err := client.Output("echo " + expected)
 				results <- Result{expected, out, err}
-			}()
+			}(i)
 		}
 		for i := 0; i < numThread; i++ {
 			result := <-results
