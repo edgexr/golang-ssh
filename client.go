@@ -439,16 +439,32 @@ func (client *NativeClient) Output(command string) (string, error) {
 
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) OutputWithTimeout(command string, timeout time.Duration) (string, error) {
-	if client.SSHClient == nil {
-		err := client.SessionStart(timeout)
+	var sessionInfo *SessionInfo
+	var err error
+
+	sshClient := client.SSHClient
+	if sshClient == nil {
+		// If no ssh client in cache, then start a
+		// new session
+		sshClient, sessionInfo, err = client.Connect(timeout)
 		if err != nil {
 			return "", err
 		}
-		defer client.SessionStop()
+		defer sessionInfo.CloseAll()
+		defer sshClient.Close()
 	}
-	session, err := client.SSHClient.NewSession()
+	session, err := sshClient.NewSession()
 	if err != nil {
-		return "", err
+		if client.SSHClient == nil {
+			return "", err
+		}
+		// if cached client was used, then retry with new client
+		client.SessionStop()
+		client.SessionStart(timeout)
+		session, err = client.SSHClient.NewSession()
+		if err != nil {
+			return "", err
+		}
 	}
 	defer session.Close()
 
