@@ -127,8 +127,8 @@ type SessionInfo struct {
 type NativeClient struct {
 	HostDetails         []HostDetail // list of Hosts
 	ClientVersion       string       // ClientVersion is the version string to send to the server when identifying
-	persistentConn      *ssh.Client  // cache client
-	persistentConnMux   sync.Mutex
+	connectedClient     *ssh.Client  // cache client
+	connectedClientMux  sync.Mutex
 	SessionInfo         *SessionInfo
 	DefaultClientConfig *ssh.ClientConfig
 }
@@ -390,15 +390,15 @@ func (nclient *NativeClient) Connect(timeout time.Duration) (*ssh.Client, *Sessi
 }
 
 func (nc *NativeClient) Session(timeout time.Duration) (*ssh.Session, *SessionInfo, error) {
-	if nc.persistentConn != nil {
-		session, err := nc.persistentConn.NewSession()
+	if nc.connectedClient != nil {
+		session, err := nc.connectedClient.NewSession()
 		if err != nil {
 			// handle persistent connection loss by trying to reconnect
 			err = nc.restartPersistentConnection(timeout)
 			if err != nil {
 				return nil, nil, err
 			}
-			session, err = nc.persistentConn.NewSession()
+			session, err = nc.connectedClient.NewSession()
 			if err != nil {
 				// cleanup
 				nc.StopPersistentConn()
@@ -423,8 +423,8 @@ func (nc *NativeClient) Session(timeout time.Duration) (*ssh.Session, *SessionIn
 
 func (nc *NativeClient) restartPersistentConnection(timeout time.Duration) error {
 	// Need to hold the lock while trying to reconnect
-	nc.persistentConnMux.Lock()
-	defer nc.persistentConnMux.Unlock()
+	nc.connectedClientMux.Lock()
+	defer nc.connectedClientMux.Unlock()
 	nc.stopPersistentConn()
 	return nc.startPersistentConn(timeout)
 }
@@ -435,7 +435,7 @@ func (nc *NativeClient) saveConnection(client *ssh.Client, sessionInfo *SessionI
 	}
 	// clear any existing sessions
 	nc.stopPersistentConn()
-	nc.persistentConn = client
+	nc.connectedClient = client
 	nc.SessionInfo = sessionInfo
 }
 
@@ -453,21 +453,21 @@ func (nc *NativeClient) stopPersistentConn() {
 		nc.SessionInfo.CloseAll()
 		nc.SessionInfo = nil
 	}
-	if nc.persistentConn != nil {
-		nc.persistentConn.Close()
-		nc.persistentConn = nil
+	if nc.connectedClient != nil {
+		nc.connectedClient.Close()
+		nc.connectedClient = nil
 	}
 }
 
 func (nc *NativeClient) StartPersistentConn(timeout time.Duration) error {
-	nc.persistentConnMux.Lock()
-	defer nc.persistentConnMux.Unlock()
+	nc.connectedClientMux.Lock()
+	defer nc.connectedClientMux.Unlock()
 	return nc.startPersistentConn(timeout)
 }
 
 func (nc *NativeClient) StopPersistentConn() {
-	nc.persistentConnMux.Lock()
-	defer nc.persistentConnMux.Unlock()
+	nc.connectedClientMux.Lock()
+	defer nc.connectedClientMux.Unlock()
 	nc.stopPersistentConn()
 }
 
