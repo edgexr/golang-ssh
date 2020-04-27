@@ -95,6 +95,13 @@ type Client interface {
 	// AddHop adds a new host to the end of the list and returns a new client.
 	// The original client is unchanged.
 	AddHop(host string, port int) (Client, error)
+
+	// Connects to host and caches connection details for
+	// same connection to be reused
+	StartPersistentConn(timeout time.Duration) error
+
+	// Stops cached sessions and close the connection
+	StopPersistentConn()
 }
 
 type HostDetail struct {
@@ -120,6 +127,8 @@ type SessionInfo struct {
 type NativeClient struct {
 	HostDetails         []HostDetail // list of Hosts
 	ClientVersion       string       // ClientVersion is the version string to send to the server when identifying
+	connectedClient     *ssh.Client  // cache client
+	connectedClientMux  sync.Mutex
 	SessionInfo         *SessionInfo
 	DefaultClientConfig *ssh.ClientConfig
 }
@@ -381,6 +390,24 @@ func (nclient *NativeClient) Connect(timeout time.Duration) (*ssh.Client, *Sessi
 }
 
 func (nc *NativeClient) Session(timeout time.Duration) (*ssh.Session, *SessionInfo, error) {
+	if nc.connectedClient != nil {
+		session, err := nc.connectedClient.NewSession()
+		if err != nil {
+			// handle persistent connection loss by trying to reconnect
+			err = nc.restartPersistentConnection(timeout)
+			if err != nil {
+				return nil, nil, err
+			}
+			session, err = nc.connectedClient.NewSession()
+			if err != nil {
+				// cleanup
+				nc.StopPersistentConn()
+				return nil, nil, err
+			}
+		}
+		// for the cached connection we don't want to close the session, so return a dummy one
+		return session, &SessionInfo{}, nil
+	}
 	client, sessionInfo, err := nc.Connect(timeout)
 	if err != nil {
 		return nil, nil, err
@@ -392,6 +419,56 @@ func (nc *NativeClient) Session(timeout time.Duration) (*ssh.Session, *SessionIn
 		return nil, nil, err
 	}
 	return session, sessionInfo, nil
+}
+
+func (nc *NativeClient) restartPersistentConnection(timeout time.Duration) error {
+	// Need to hold the lock while trying to reconnect
+	nc.connectedClientMux.Lock()
+	defer nc.connectedClientMux.Unlock()
+	nc.stopPersistentConn()
+	return nc.startPersistentConn(timeout)
+}
+
+func (nc *NativeClient) saveConnection(client *ssh.Client, sessionInfo *SessionInfo) {
+	if client == nil && sessionInfo == nil {
+		return
+	}
+	// clear any existing sessions
+	nc.stopPersistentConn()
+	nc.connectedClient = client
+	nc.SessionInfo = sessionInfo
+}
+
+func (nc *NativeClient) startPersistentConn(timeout time.Duration) error {
+	client, sessionInfo, err := nc.Connect(timeout)
+	if err != nil {
+		return err
+	}
+	nc.saveConnection(client, sessionInfo)
+	return nil
+}
+
+func (nc *NativeClient) stopPersistentConn() {
+	if nc.SessionInfo != nil {
+		nc.SessionInfo.CloseAll()
+		nc.SessionInfo = nil
+	}
+	if nc.connectedClient != nil {
+		nc.connectedClient.Close()
+		nc.connectedClient = nil
+	}
+}
+
+func (nc *NativeClient) StartPersistentConn(timeout time.Duration) error {
+	nc.connectedClientMux.Lock()
+	defer nc.connectedClientMux.Unlock()
+	return nc.startPersistentConn(timeout)
+}
+
+func (nc *NativeClient) StopPersistentConn() {
+	nc.connectedClientMux.Lock()
+	defer nc.connectedClientMux.Unlock()
+	nc.stopPersistentConn()
 }
 
 // Output returns the output of the command run on the remote host.
@@ -475,6 +552,8 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 		return nil, nil, nil, err
 	}
 	sessionInfo.openSession = session
+	client.saveConnection(nil, sessionInfo)
+
 	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), stdin, nil
 }
 
