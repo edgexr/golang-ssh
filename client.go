@@ -95,6 +95,13 @@ type Client interface {
 	// AddHop adds a new host to the end of the list and returns a new client.
 	// The original client is unchanged.
 	AddHop(host string, port int) (Client, error)
+
+	// Connects to host and caches session details for
+	// same connection to be reused
+	SessionStart(timeout time.Duration) error
+
+	// Stops cached sessions
+	SessionStop()
 }
 
 type HostDetail struct {
@@ -120,6 +127,7 @@ type SessionInfo struct {
 type NativeClient struct {
 	HostDetails         []HostDetail // list of Hosts
 	ClientVersion       string       // ClientVersion is the version string to send to the server when identifying
+	SSHClient           *ssh.Client  // cache client
 	SessionInfo         *SessionInfo
 	DefaultClientConfig *ssh.ClientConfig
 }
@@ -394,6 +402,36 @@ func (nc *NativeClient) Session(timeout time.Duration) (*ssh.Session, *SessionIn
 	return session, sessionInfo, nil
 }
 
+func (nc *NativeClient) saveSession(client *ssh.Client, sessionInfo *SessionInfo) {
+	if client == nil && sessionInfo == nil {
+		return
+	}
+	// clear any existing sessions
+	nc.SessionStop()
+	nc.SSHClient = client
+	nc.SessionInfo = sessionInfo
+}
+
+func (nc *NativeClient) SessionStart(timeout time.Duration) error {
+	client, sessionInfo, err := nc.Connect(timeout)
+	if err != nil {
+		return err
+	}
+	nc.saveSession(client, sessionInfo)
+	return nil
+}
+
+func (nc *NativeClient) SessionStop() {
+	if nc.SessionInfo != nil {
+		nc.SessionInfo.CloseAll()
+		nc.SessionInfo = nil
+	}
+	if nc.SSHClient != nil {
+		nc.SSHClient.Close()
+		nc.SSHClient = nil
+	}
+}
+
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) Output(command string) (string, error) {
 	return client.OutputWithTimeout(command, client.DefaultClientConfig.Timeout)
@@ -401,13 +439,19 @@ func (client *NativeClient) Output(command string) (string, error) {
 
 // Output returns the output of the command run on the remote host.
 func (client *NativeClient) OutputWithTimeout(command string, timeout time.Duration) (string, error) {
-	session, sessionInfo, err := client.Session(timeout)
-	// even on failure, intermediate hop connections must close
+	if client.SSHClient == nil {
+		err := client.SessionStart(timeout)
+		if err != nil {
+			return "", err
+		}
+		defer client.SessionStop()
+	}
+	session, err := client.SSHClient.NewSession()
 	if err != nil {
 		return "", err
 	}
-	defer sessionInfo.CloseAll()
 	defer session.Close()
+
 	output, err := session.CombinedOutput(command)
 	return string(bytes.TrimSpace(output)), wrapError(err)
 }
@@ -475,6 +519,8 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 		return nil, nil, nil, err
 	}
 	sessionInfo.openSession = session
+	client.saveSession(nil, sessionInfo)
+
 	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), stdin, nil
 }
 
