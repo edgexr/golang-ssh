@@ -44,6 +44,22 @@ func TestNativeClient(t *testing.T) {
 	numThread := 5
 	results := make(chan Result, numThread)
 
+	// test cached connection api with multiple threads
+	client.StartPersistentConn(timeout)
+	for i := 0; i < numThread; i++ {
+		go func(i int) {
+			expected := fmt.Sprintf("testing: %d", i)
+			out, err := client.Output("echo " + expected)
+			results <- Result{expected, out, err}
+		}(i)
+	}
+	for i := 0; i < numThread; i++ {
+		result := <-results
+		require.Nil(t, result.err, "result")
+		require.Equal(t, result.expected, result.out, result.expected)
+	}
+	client.StopPersistentConn()
+
 	for hopTest := 0; hopTest < len(testServers); hopTest++ {
 		if hopTest != 0 {
 			newclient, err := client.AddHop(testServers[hopTest], 22)
