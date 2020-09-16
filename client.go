@@ -35,6 +35,8 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
+const SSHKeepAliveTimeout = 30 * time.Minute
+
 // ExitError is a conveniance wrapper for (crypto/ssh).ExitError type.
 type ExitError struct {
 	Err      error
@@ -609,6 +611,23 @@ func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...s
 	if err := session.RequestPty("xterm", termHeight, termWidth, modes); err != nil {
 		return err
 	}
+
+	// this sends keepalive packets every 30 seconds for a period of SSHKeepAliveTimeout
+	go func() {
+		timeout := time.After(SSHKeepAliveTimeout)
+		tick := time.Tick(30 * time.Second)
+		for {
+			select {
+			case <-timeout:
+				return
+			case <-tick:
+				_, err := session.SendRequest("keepalive@mobiledgex", true, nil)
+				if err != nil {
+					return
+				}
+			}
+		}
+	}()
 
 	if len(args) == 0 {
 		if err := session.Shell(); err != nil {
