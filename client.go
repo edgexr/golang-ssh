@@ -36,6 +36,7 @@ import (
 )
 
 const SSHKeepAliveTimeout = 30 * time.Minute
+const SSHKeepAliveInterval = 1 * time.Minute
 
 // ExitError is a conveniance wrapper for (crypto/ssh).ExitError type.
 type ExitError struct {
@@ -615,7 +616,7 @@ func (client *NativeClient) Shell(sin io.Reader, sout, serr io.Writer, args ...s
 	// this sends keepalive packets every 30 seconds for a period of SSHKeepAliveTimeout
 	go func() {
 		timeout := time.After(SSHKeepAliveTimeout)
-		tick := time.Tick(30 * time.Second)
+		tick := time.Tick(SSHKeepAliveInterval)
 		for {
 			select {
 			case <-timeout:
