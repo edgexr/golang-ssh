@@ -143,10 +143,10 @@ type KeyPair struct {
 
 // Auth contains auth info
 type Auth struct {
-	Passwords []string // Passwords is a slice of passwords to submit to the server
-	Keys      []string // Keys is a slice of filenames of keys to try
-	RawKeys   [][]byte // RawKeys is a slice of private keys to try
-	KeyPairs  []KeyPair
+	Passwords []string  // Passwords is a slice of passwords to submit to the server
+	Keys      []string  // Keys is a slice of filenames of keys to try
+	RawKeys   [][]byte  // RawKeys is a slice of private keys to try
+	KeyPairs  []KeyPair // KeyPairs is a slice of signed public keys & private keys to try
 }
 
 // Config is used to create new client.
