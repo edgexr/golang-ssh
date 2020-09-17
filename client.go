@@ -136,11 +136,17 @@ type NativeClient struct {
 	DefaultClientConfig *ssh.ClientConfig
 }
 
+type KeyPair struct {
+	PublicRawKey  []byte
+	PrivateRawKey []byte
+}
+
 // Auth contains auth info
 type Auth struct {
-	Passwords []string // Passwords is a slice of passwords to submit to the server
-	Keys      []string // Keys is a slice of filenames of keys to try
-	RawKeys   [][]byte // RawKeys is a slice of private keys to try
+	Passwords []string  // Passwords is a slice of passwords to submit to the server
+	Keys      []string  // Keys is a slice of filenames of keys to try
+	RawKeys   [][]byte  // RawKeys is a slice of private keys to try
+	KeyPairs  []KeyPair // KeyPairs is a slice of signed public keys & private keys to try
 }
 
 // Config is used to create new client.
@@ -305,6 +311,23 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Durati
 
 		for _, p := range auth.Passwords {
 			authMethods = append(authMethods, ssh.Password(p))
+		}
+
+		for _, keypair := range auth.KeyPairs {
+			pubCert, _, _, _, err := ssh.ParseAuthorizedKey(keypair.PublicRawKey)
+			if err != nil {
+				return ssh.ClientConfig{}, fmt.Errorf("failed to parse authorized key: %v", err)
+			}
+			privateKey, err := ssh.ParsePrivateKey(keypair.PrivateRawKey)
+			if err != nil {
+				return ssh.ClientConfig{}, fmt.Errorf("failed to parse private key: %v", err)
+			}
+			ucertSigner, err := ssh.NewCertSigner(pubCert.(*ssh.Certificate), privateKey)
+			if err != nil {
+				return ssh.ClientConfig{}, err
+			}
+
+			authMethods = append(authMethods, ssh.PublicKeys(ucertSigner))
 		}
 	}
 
