@@ -30,7 +30,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/pkg/term"
+	"github.com/moby/term"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/terminal"
 )
