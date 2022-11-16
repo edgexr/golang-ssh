@@ -263,21 +263,21 @@ func (c *NativeClient) RemoveLastHop() (interface{}, error) {
 
 // NewNativeClient creates a new Client using the golang ssh library
 func NewNativeClient(user, clientVersion string, host string, port int, hostAuth *Auth, timeout time.Duration, hostKeyCallback ssh.HostKeyCallback) (Client, error) {
-	if clientVersion == "" {
-		clientVersion = "SSH-2.0-Go"
-	}
 	defaultConfig, err := NewNativeConfig(user, clientVersion, hostAuth, timeout, hostKeyCallback)
 	if err != nil {
 		return nil, fmt.Errorf("Error getting host config for native Go SSH: %s", err)
 	}
+	return NewNativeClientWithConfig(host, port, defaultConfig)
+}
 
-	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: &defaultConfig}
+func NewNativeClientWithConfig(host string, port int, config ssh.ClientConfig) (Client, error) {
+	var hostDetail = HostDetail{HostName: host, Port: port, ClientConfig: &config}
 	hd := []HostDetail{hostDetail}
 	var sessionInfo SessionInfo
 	var nc = NativeClient{
 		HostDetails:         hd,
-		ClientVersion:       clientVersion,
-		DefaultClientConfig: &defaultConfig,
+		ClientVersion:       config.ClientVersion,
+		DefaultClientConfig: &config,
 		SessionInfo:         &sessionInfo,
 	}
 	return &nc, nil
@@ -289,6 +289,9 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Durati
 		authMethods []ssh.AuthMethod
 	)
 
+	if clientVersion == "" {
+		clientVersion = "SSH-2.0-Go"
+	}
 	if auth != nil {
 		rawKeys := auth.RawKeys
 		for _, k := range auth.Keys {
@@ -364,17 +367,18 @@ func (nclient *NativeClient) Connect(timeout time.Duration) (*ssh.Client, *Sessi
 			// make a copy of a client config to use differetnt timeout
 			configWithTimeout = *h.ClientConfig
 			configWithTimeout.Timeout = timeout
-			sshClient, err = ssh.Dial("tcp", destAddr, &configWithTimeout)
+
+			conn, err := net.DialTimeout("tcp", destAddr, timeout)
 			if err != nil {
 				sessionInfo.CloseAll()
-				return nil, nil, fmt.Errorf("ssh dial fail to %s - %v", destAddr, err)
+				return nil, nil, fmt.Errorf("net dial failed to %s - %v", destAddr, err)
 			}
-			sessionInfo.saveClient(sshClient)
-			conn, err = sshClient.Dial("tcp", destAddr)
+			c, chans, reqs, err := ssh.NewClientConn(conn, destAddr, &configWithTimeout)
 			if err != nil {
 				sessionInfo.CloseAll()
-				return nil, nil, fmt.Errorf("ssh client dial fail to %s - %v", destAddr, err)
+				return nil, nil, fmt.Errorf("new client conn failed to %s - %v", destAddr, err)
 			}
+			sshClient = ssh.NewClient(c, chans, reqs)
 			sessionInfo.saveConn(conn)
 		} else {
 			// ssh.Client dial does not use a timeout.  In order to make subsequent hops time out, use a separate timer
