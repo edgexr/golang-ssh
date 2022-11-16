@@ -1,9 +1,8 @@
 package ssh
 
 import (
-	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -51,24 +50,29 @@ genKeys:
 // GenKeyPair make a pair of public and private keys for SSH access.
 // Public key is encoded in the format for inclusion in an OpenSSH authorized_keys file.
 // Private Key generated is PEM encoded
+// Due to difficulty handling changes to RSA signing names
+// (i.e. OpenSSH < 7.6 refers to it as "rsa-sha256" but golang
+// refers to it as "rsa-sha2-256-vert-v01@openssh.com",
+// switch to using ed25519 certs instead.
 func GenKeyPair() (string, string, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", "", err
 	}
 
-	privateKeyPEM := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}
-	var private bytes.Buffer
-	if err := pem.Encode(&private, privateKeyPEM); err != nil {
+	privBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
 		return "", "", err
 	}
+	block := &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}
+	private := pem.EncodeToMemory(block)
 
 	// generate public key
-	pub, err := ssh.NewPublicKey(&privateKey.PublicKey)
+	pub, err := ssh.NewPublicKey(publicKey)
 	if err != nil {
 		return "", "", err
 	}
 
 	public := ssh.MarshalAuthorizedKey(pub)
-	return string(public), private.String(), nil
+	return string(public), string(private), nil
 }
