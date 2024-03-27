@@ -22,7 +22,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"strconv"
@@ -32,7 +31,7 @@ import (
 
 	"github.com/moby/term"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/terminal"
+	terminal "golang.org/x/term"
 )
 
 const SSHKeepAliveTimeout = 30 * time.Minute
@@ -143,10 +142,11 @@ type KeyPair struct {
 
 // Auth contains auth info
 type Auth struct {
-	Passwords []string  // Passwords is a slice of passwords to submit to the server
-	Keys      []string  // Keys is a slice of filenames of keys to try
-	RawKeys   [][]byte  // RawKeys is a slice of private keys to try
-	KeyPairs  []KeyPair // KeyPairs is a slice of signed public keys & private keys to try
+	Passwords        []string                  // Passwords is a slice of passwords to submit to the server
+	Keys             []string                  // Keys is a slice of filenames of keys to try
+	RawKeys          [][]byte                  // RawKeys is a slice of private keys to try
+	KeyPairs         []KeyPair                 // KeyPairs is a slice of signed public keys & private keys to try
+	KeyPairsCallback func() ([]KeyPair, error) // Callback to get KeyPairs
 }
 
 // Config is used to create new client.
@@ -218,6 +218,22 @@ func (s *SessionInfo) CloseAll() {
 	}
 	s.openSession = nil
 
+}
+
+func (k *KeyPair) getSigner() (ssh.Signer, error) {
+	pubCert, _, _, _, err := ssh.ParseAuthorizedKey(k.PublicRawKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse authorized key: %v", err)
+	}
+	privateKey, err := ssh.ParsePrivateKey(k.PrivateRawKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key: %v", err)
+	}
+	ucertSigner, err := ssh.NewCertSigner(pubCert.(*ssh.Certificate), privateKey)
+	if err != nil {
+		return nil, err
+	}
+	return ucertSigner, nil
 }
 
 // Copy copies the NativeClient with empty SessionInfo
@@ -295,7 +311,7 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Durati
 	if auth != nil {
 		rawKeys := auth.RawKeys
 		for _, k := range auth.Keys {
-			key, err := ioutil.ReadFile(k)
+			key, err := os.ReadFile(k)
 			if err != nil {
 				return ssh.ClientConfig{}, err
 			}
@@ -317,20 +333,29 @@ func NewNativeConfig(user, clientVersion string, auth *Auth, timeout time.Durati
 		}
 
 		for _, keypair := range auth.KeyPairs {
-			pubCert, _, _, _, err := ssh.ParseAuthorizedKey(keypair.PublicRawKey)
-			if err != nil {
-				return ssh.ClientConfig{}, fmt.Errorf("failed to parse authorized key: %v", err)
-			}
-			privateKey, err := ssh.ParsePrivateKey(keypair.PrivateRawKey)
-			if err != nil {
-				return ssh.ClientConfig{}, fmt.Errorf("failed to parse private key: %v", err)
-			}
-			ucertSigner, err := ssh.NewCertSigner(pubCert.(*ssh.Certificate), privateKey)
+			signer, err := keypair.getSigner()
 			if err != nil {
 				return ssh.ClientConfig{}, err
 			}
+			authMethods = append(authMethods, ssh.PublicKeys(signer))
+		}
 
-			authMethods = append(authMethods, ssh.PublicKeys(ucertSigner))
+		if auth.KeyPairsCallback != nil {
+			authMethods = append(authMethods, ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+				keypairs, err := auth.KeyPairsCallback()
+				if err != nil {
+					return nil, err
+				}
+				signers := []ssh.Signer{}
+				for _, keypair := range keypairs {
+					signer, err := keypair.getSigner()
+					if err != nil {
+						return nil, err
+					}
+					signers = append(signers, signer)
+				}
+				return signers, nil
+			}))
 		}
 	}
 
@@ -584,7 +609,7 @@ func (client *NativeClient) Start(command string) (sout io.ReadCloser, serr io.R
 	sessionInfo.openSession = session
 	client.saveConnection(nil, sessionInfo)
 
-	return ioutil.NopCloser(stdout), ioutil.NopCloser(stderr), stdin, nil
+	return io.NopCloser(stdout), io.NopCloser(stderr), stdin, nil
 }
 
 // Wait waits for the command started by the Start function to exit. The
